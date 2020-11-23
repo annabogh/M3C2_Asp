@@ -19,7 +19,7 @@ def load_ascii_points(filepath: str) -> pd.DataFrame:
 
     :returns: A DataFrame with fixed float64 dtypes and correct column names.
     """
-    columns: list[str] = []
+    column_names: list[str] = []
     header_stop = 0
 
     # Read the header in the ASCII formatted file to find the column names and where the header stops
@@ -31,7 +31,7 @@ def load_ascii_points(filepath: str) -> pd.DataFrame:
                 _, _, name = line.split(" ", maxsplit=3)
 
                 # Append the column without newline characters and remove the "scalar_" prefixes
-                columns.append(name.replace("\n", "").replace("scalar_", ""))
+                column_names.append(name.replace("\n", "").replace("scalar_", ""))
 
             # Stop if it reached the end of the header.
             if "end_header" in line:
@@ -39,34 +39,10 @@ def load_ascii_points(filepath: str) -> pd.DataFrame:
                 break
 
     # Read the file as a space delimited file, assume that the dtype is float64, and skip the header
-    data = pd.read_csv(filepath, sep=" ", header=None, names=columns,
+    data = pd.read_csv(filepath, sep=" ", header=None, names=column_names,
                        dtype=np.float64, skiprows=header_stop, index_col=False)
 
-    data.name = os.path.splitext(os.path.basename(filepath))[0]
-    return data
-
-
-def load_points(filepath: str) -> pd.DataFrame:
-    """
-    Load a binary point cloud into a Pandas DataFrame.
-
-    :param filepath: The path to the point cloud to load.
-    :returns: The loaded points.
-    """
-    pipeline_template = jinja2.Template("""
-    [
-        "{{ filepath }}"
-    ]
-    """)
-
-    pipeline = pdal.Pipeline(pipeline_template.render({"filepath": filepath}))
-    pipeline.execute()
-
-    # Read the first array (the only one) and convert it to a dataframe
-    data = pd.DataFrame(pipeline.arrays[0])
-    # Set the name of the dataframe to the filename without an extension
-    data.name = os.path.splitext(os.path.basename(filepath))[0]
-
+    data.name = os.path.splitext(os.path.basename(filepath))[0].replace("Points_", "").replace("_M3C2", "")
     return data
 
 
@@ -87,7 +63,7 @@ def load_all_point_clouds(folder: str = BASE_FOLDER) -> list[pd.DataFrame]:
     return point_clouds
 
 
-def preprocess_points(points: pd.DataFrame, glacier_threshold: float = 70.0) -> pd.DataFrame:
+def preprocess_points(points: pd.DataFrame, glacier_threshold: float = 50.0) -> pd.DataFrame:
     """
     Run the main analysis.
     """
@@ -98,66 +74,91 @@ def preprocess_points(points: pd.DataFrame, glacier_threshold: float = 70.0) -> 
     bin_number = 100
     gray_bins = np.linspace(0, 255, num=bin_number)
     histogram, _ = np.histogram(points["gray"], bins=gray_bins)
-    most_common_value = float(np.argwhere(histogram == histogram.max()) * (255 / bin_number))
+    # TODO: Fix below that there may be more than one maximum index
+    most_common_value = np.argwhere(histogram == histogram.max())[0, 0] * (255 / bin_number)
 
     for dimension in ["x", "y", "z"]:
         points[f"{dimension}diff"] = points[f"n{dimension}"] * points["M3C2_distance"]
 
-    points.name = name
-    points.drop(points[points["gray"] > most_common_value + glacier_threshold].index, inplace=True)
-    return points
+    cropped_points = points[points["gray"] < (most_common_value + glacier_threshold)]
+
+    cropped_points.name = points.name
+
+    return cropped_points
 
 
-def plot(points: pd.DataFrame) -> None:
+def plot(tiepoint_list: list[pd.DataFrame]) -> None:
     """
     Plot the results.
 
     """
-    plt.subplot(211)
-
-    hist = np.histogram(points["gray"], bins=100)[0]
-    max_index = np.argwhere(hist == hist.max())
-
-    plt.bar(np.linspace(0, 255, num=hist.shape[0]), hist, width=2.6)
-
-    current_ylim = plt.gca().get_ylim()
-    plt.vlines(x=max_index * (255 / hist.shape[0]), ymin=0, ymax=current_ylim[1], color="black")
-    plt.vlines(x=max_index * (255 / hist.shape[0]) + 80, ymin=0, ymax=current_ylim[1], color="red")
-
-    plt.subplot(212)
-
-    median = np.nanmedian(points["M3C2_distance"])
-    plt.hist(points["M3C2_distance"], bins=200)
-
-    plt.vlines(x=median, ymin=0, ymax=plt.gca().get_ylim()[1], color="black")
-    plt.show()
-
-
-if __name__ == "__main__":
-    all_tiepoints = load_all_point_clouds()
-    for tiepoints in all_tiepoints:
-        preprocess_points(tiepoints)
-
+    # TODO: Resize figure to fit an area smaller than an A4
     plt.figure(figsize=(16, 10), dpi=150)
 
     bins = np.linspace(-7, 7, num=150)
     colors = ["lightgreen", "orange", "skyblue"]
-    for i, tiepoints in enumerate(all_tiepoints):
+    for i, tiepoints in enumerate(tiepoint_list):
 
         for j, col in enumerate(["xdiff", "ydiff", "zdiff"]):
-            if j == 2:
+            plt.subplot(len(tiepoint_list), 3, (i * 3) + j + 1)
+
+            # Make a title if in the middle column
+            if j == 1:
                 plt.text(x=0.5, y=0.9, s=tiepoints.name, fontsize=8,
                          transform=plt.gca().transAxes, ha="center", va="center")
-            plt.subplot(len(all_tiepoints), 3, (i * 3) + j + 1)
+            plt.hist(tiepoints[col], bins=bins, color=colors[j], density=True)
 
-            plt.hist(tiepoints[col], bins=bins, color=colors[j])
-
-            if i != len(all_tiepoints) - 1:
+            # Remove x-tick labels for all except the last rows.
+            if i != len(tiepoint_list) - 1:
                 plt.gca().set_xticklabels([])
+            # If on the last row, also add an x-label
             else:
                 plt.xlabel(col)
 
             plt.grid()
 
     plt.tight_layout(h_pad=0)
+    os.makedirs("Output", exist_ok=True)
+    plt.savefig("Output/m3c2_error_histogram.png", dpi=600)
     plt.show()
+
+
+def calc_statistics(point_list: list[pd.DataFrame]):
+
+    column_names = ["xdiff", "ydiff", "zdiff", "M3C2_distance"]
+
+    errors = pd.DataFrame(columns=column_names)
+
+    for points in point_list:
+        for column in column_names:
+            median = points[column].median()
+            std = points[column].std()
+            error = f"{median:.3f}±{std:.3f}"
+            errors.loc[points.name, column] = error
+
+    errors.rename(columns={
+        "xdiff": "Easting (Δm)",
+        "ydiff": "Northing (Δm)",
+        "zdiff": "Height (Δm)",
+        "M3C2_distance": "Total error (Δm)"
+    }, inplace=True)
+    errors.index.name = "Locality"
+
+    os.makedirs("Output", exist_ok=True)
+    with open("Output/m3c2_error_table.tex", "w") as outfile:
+        out_text = errors.reset_index().to_latex(
+            index=False,
+            bold_rows=True,
+            column_format="c" * (len(column_names) + 1))
+        outfile.write(out_text)
+    print(errors)
+
+
+if __name__ == "__main__":
+    all_tiepoints = load_all_point_clouds()
+    preprocessed_tiepoints = []
+    for tiepoints in all_tiepoints:
+        preprocessed_tiepoints.append(preprocess_points(tiepoints))
+    calc_statistics(all_tiepoints)
+
+    plot(preprocessed_tiepoints)
