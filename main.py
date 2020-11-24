@@ -2,11 +2,9 @@ from __future__ import annotations
 
 import os
 
-import jinja2
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import pdal
 
 BASE_FOLDER = "Data/"
 
@@ -145,7 +143,7 @@ def calc_statistics(point_list: list[pd.DataFrame]):
     errors.index.name = "Locality"
 
     os.makedirs("Output", exist_ok=True)
-    with open("Output/m3c2_error_table.tex", "w") as outfile:
+    with open("Output/m3c2_error_table.tex", "w", encoding="utf-8") as outfile:
         out_text = errors.reset_index().to_latex(
             index=False,
             bold_rows=True,
