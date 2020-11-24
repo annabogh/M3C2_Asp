@@ -6,42 +6,9 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
+import utilities
+
 BASE_FOLDER = "Data/"
-
-
-def load_ascii_points(filepath: str) -> pd.DataFrame:
-    """
-    Load an ASCII ply point cloud into a Pandas DataFrame.
-
-    :param filepath: The path to the point cloud.
-
-    :returns: A DataFrame with fixed float64 dtypes and correct column names.
-    """
-    column_names: list[str] = []
-    header_stop = 0
-
-    # Read the header in the ASCII formatted file to find the column names and where the header stops
-    with open(filepath) as infile:
-        for i, line in enumerate(infile):
-            # If it's a column description
-            if line.startswith("property"):
-                # Format: "property dtype column_name"
-                _, _, name = line.split(" ", maxsplit=3)
-
-                # Append the column without newline characters and remove the "scalar_" prefixes
-                column_names.append(name.replace("\n", "").replace("scalar_", ""))
-
-            # Stop if it reached the end of the header.
-            if "end_header" in line:
-                header_stop = i + 1
-                break
-
-    # Read the file as a space delimited file, assume that the dtype is float64, and skip the header
-    data = pd.read_csv(filepath, sep=" ", header=None, names=column_names,
-                       dtype=np.float64, skiprows=header_stop, index_col=False)
-
-    data.name = os.path.splitext(os.path.basename(filepath))[0].replace("Points_", "").replace("_M3C2", "")
-    return data
 
 
 def load_all_point_clouds(folder: str = BASE_FOLDER) -> list[pd.DataFrame]:
@@ -56,29 +23,27 @@ def load_all_point_clouds(folder: str = BASE_FOLDER) -> list[pd.DataFrame]:
         if not filename.endswith(".ply"):
             continue
 
-        points = load_ascii_points(os.path.join(folder, filename))
+        points = utilities.load_ascii_points(os.path.join(folder, filename))
         point_clouds.append(points)
     return point_clouds
 
 
 def preprocess_points(points: pd.DataFrame, glacier_threshold: float = 50.0) -> pd.DataFrame:
     """
-    Run the main analysis.
+    Preprocess points by removing bright spots (snow/ice) and adding x/y/x-diff columns.
+
+    :param points: The tie points to preprocess.
+    :param glacier_threshold: The maximum allowed brightness value, counted from the most normal brightness value.
+
+    :returns: A new DataFrame with the same shape with the new columns
     """
-    name = points.name
-
-    points["gray"] = points[["red", "green", "blue"]].mean(axis=1)
-
-    bin_number = 100
-    gray_bins = np.linspace(0, 255, num=bin_number)
-    histogram, _ = np.histogram(points["gray"], bins=gray_bins)
-    # TODO: Fix below that there may be more than one maximum index
-    most_common_value = np.argwhere(histogram == histogram.max())[0, 0] * (255 / bin_number)
+    new_points = points.copy()
 
     for dimension in ["x", "y", "z"]:
-        points[f"{dimension}diff"] = points[f"n{dimension}"] * points["M3C2_distance"]
+        new_points[f"{dimension}diff"] = new_points[f"n{dimension}"] * new_points["M3C2_distance"]
 
-    cropped_points = points[points["gray"] < (most_common_value + glacier_threshold)]
+    new_points["gray"] = new_points[["red", "green", "blue"]].mean(axis=1)
+    cropped_points = new_points[new_points["gray"] < (new_points["gray"].median() + glacier_threshold)]
 
     cropped_points.name = points.name
 
@@ -87,13 +52,15 @@ def preprocess_points(points: pd.DataFrame, glacier_threshold: float = 50.0) -> 
 
 def plot(tiepoint_list: list[pd.DataFrame]) -> None:
     """
-    Plot the results.
+    Plot the distribution plots.
 
+    :param tiepoint_list: A list of Pandas DataFrames representing the tie point clouds.
     """
     # TODO: Resize figure to fit an area smaller than an A4
     plt.figure(figsize=(16, 10), dpi=150)
 
-    bins = np.linspace(-7, 7, num=150)
+    magnitude = 7
+    bins = np.linspace(-magnitude, magnitude, num=150)
     colors = ["lightgreen", "orange", "skyblue"]
     for i, tiepoints in enumerate(tiepoint_list):
 
@@ -113,6 +80,8 @@ def plot(tiepoint_list: list[pd.DataFrame]) -> None:
             else:
                 plt.xlabel(col)
 
+            plt.xlim(-magnitude, magnitude)
+
             plt.grid()
 
     plt.tight_layout(h_pad=0)
@@ -121,42 +90,56 @@ def plot(tiepoint_list: list[pd.DataFrame]) -> None:
     plt.show()
 
 
-def calc_statistics(point_list: list[pd.DataFrame]):
+def calc_statistics(tiepoint_list: list[pd.DataFrame]):
+    """
+    Calculate the statistics of each dimension's error distribution.
 
+    :param tiepoint_list: A list of Pandas DataFrames representing the tie point clouds.
+    """
+    # Choose which columns should be included in the statistics
     column_names = ["xdiff", "ydiff", "zdiff", "M3C2_distance"]
 
-    errors = pd.DataFrame(columns=column_names)
+    # Create two identical (empty) DataFrames for the medians and standard deviations
+    medians = pd.DataFrame(columns=column_names, dtype=np.float64)
+    stds = medians.copy()
 
-    for points in point_list:
+    # Iteratively fill the above dataframes with data
+    for points in tiepoint_list:
         for column in column_names:
             median = points[column].median()
             std = points[column].std()
-            error = f"{median:.3f}±{std:.3f}"
-            errors.loc[points.name, column] = error
 
-    errors.rename(columns={
-        "xdiff": "Easting (Δm)",
-        "ydiff": "Northing (Δm)",
-        "zdiff": "Height (Δm)",
-        "M3C2_distance": "Total error (Δm)"
-    }, inplace=True)
-    errors.index.name = "Locality"
+            # Add the above results to the appropriate DataFrames
+            medians.loc[points.name, column] = median
+            stds.loc[points.name, column] = std
 
+    # Rename the columns and indices of the two DataFrames to look nicer
+    for data in (medians, stds):
+        data.rename(columns={
+            "xdiff": "Easting (Δm)",
+            "ydiff": "Northing (Δm)",
+            "zdiff": "Height (Δm)",
+            "M3C2_distance": "Total error (Δm)"
+        }, inplace=True)
+        data.index.name = "Locality"
+
+    # Make the LaTeX table from the medians and stds
+    latex_table = utilities.to_latex_table(medians=medians, errors=stds)
+
+    # Write it to an output file
     os.makedirs("Output", exist_ok=True)
-    with open("Output/m3c2_error_table.tex", "w", encoding="utf-8") as outfile:
-        out_text = errors.reset_index().to_latex(
-            index=False,
-            bold_rows=True,
-            column_format="c" * (len(column_names) + 1))
-        outfile.write(out_text)
-    print(errors)
+    with open("Output/m3c2_error_table.tex", "w") as outfile:
+        outfile.write(latex_table)
+
+    print(latex_table)
 
 
 if __name__ == "__main__":
+    # Load all the tie point clouds
     all_tiepoints = load_all_point_clouds()
-    preprocessed_tiepoints = []
-    for tiepoints in all_tiepoints:
-        preprocessed_tiepoints.append(preprocess_points(tiepoints))
-    calc_statistics(all_tiepoints)
-
+    # Preprocess all the tie point clouds.
+    preprocessed_tiepoints = [preprocess_points(tiepoints, glacier_threshold=70) for tiepoints in all_tiepoints]
+    # Calculate statistics on them.
+    calc_statistics(preprocessed_tiepoints)
+    # Plot their error distribution
     plot(preprocessed_tiepoints)

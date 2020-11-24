@@ -2,3 +2,4 @@
 .vim/
 Input/
 Output
+__pycache__/
