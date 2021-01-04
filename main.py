@@ -59,6 +59,8 @@ def plot(tiepoint_list: list[pd.DataFrame]) -> None:
     # TODO: Resize figure to fit an area smaller than an A4
     plt.figure(figsize=(16, 10), dpi=150)
 
+    x_labels = {"xdiff": "Δ Easting (m)", "ydiff": "Δ Northing (m)", "zdiff": "Δ Height (m)"}
+
     magnitude = 7
     bins = np.linspace(-magnitude, magnitude, num=150)
     colors = ["lightgreen", "orange", "skyblue"]
@@ -72,13 +74,17 @@ def plot(tiepoint_list: list[pd.DataFrame]) -> None:
                 plt.text(x=0.5, y=0.9, s=tiepoints.name, fontsize=8,
                          transform=plt.gca().transAxes, ha="center", va="center")
             plt.hist(tiepoints[col], bins=bins, color=colors[j], density=True)
+            median = np.nanmedian(tiepoints[col])
+            standard_dev = np.std(tiepoints[col])
+            text = f"M = {median:.2f} m\nσ = {standard_dev:.2f} m"
+            plt.text(x=0.75, y=0.9, s=text, fontsize=7, transform=plt.gca().transAxes, ha="left", va="top")
 
             # Remove x-tick labels for all except the last rows.
             if i != len(tiepoint_list) - 1:
                 plt.gca().set_xticklabels([])
             # If on the last row, also add an x-label
             else:
-                plt.xlabel(col)
+                plt.xlabel(x_labels[col])
 
             plt.xlim(-magnitude, magnitude)
 
@@ -116,10 +122,10 @@ def calc_statistics(tiepoint_list: list[pd.DataFrame]):
     # Rename the columns and indices of the two DataFrames to look nicer
     for data in (medians, stds):
         data.rename(columns={
-            "xdiff": "Easting (Δm)",
-            "ydiff": "Northing (Δm)",
-            "zdiff": "Height (Δm)",
-            "M3C2_distance": "Total error (Δm)"
+            "xdiff": "Easting ($\Delta$m)",
+            "ydiff": "Northing ($\Delta$m)",
+            "zdiff": "Height ($\Delta$m)",
+            "M3C2_distance": "Total error ($\Delta$m)"
         }, inplace=True)
         data.index.name = "Locality"
 
@@ -128,7 +134,7 @@ def calc_statistics(tiepoint_list: list[pd.DataFrame]):
 
     # Write it to an output file
     os.makedirs("Output", exist_ok=True)
-    with open("Output/m3c2_error_table.tex", "w") as outfile:
+    with open("Output/m3c2_error_table.tex", "w", encoding="utf-8") as outfile:
         outfile.write(latex_table)
 
     print(latex_table)
@@ -137,9 +143,13 @@ def calc_statistics(tiepoint_list: list[pd.DataFrame]):
 if __name__ == "__main__":
     # Load all the tie point clouds
     all_tiepoints = load_all_point_clouds()
+    print("Loaded all tie points")
     # Preprocess all the tie point clouds.
     preprocessed_tiepoints = [preprocess_points(tiepoints, glacier_threshold=70) for tiepoints in all_tiepoints]
+    print("Preprocessed all tie points")
     # Calculate statistics on them.
     calc_statistics(preprocessed_tiepoints)
+    print("Calculated statistics")
+    print("Plotting...")
     # Plot their error distribution
     plot(preprocessed_tiepoints)
